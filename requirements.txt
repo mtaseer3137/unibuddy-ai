@@ -1,0 +1,6 @@
+google-genai
+chromadb
+pypdf
+python-pptx
+python-docx
+streamlit
