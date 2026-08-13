@@ -13,6 +13,7 @@ RUN:
 """
 
 import os
+import time
 import streamlit as st
 import chromadb
 from google import genai
@@ -124,14 +125,27 @@ def get_ai_response(full_prompt, student_name):
         types.Content(role="user", parts=[types.Part(text=full_prompt)])
     )
 
-    response = client.models.generate_content(
-        model="gemini-flash-latest",
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=build_system_prompt(student_name)
-        ),
-    )
-    return response.text
+    # Try a couple of model names in case one is temporarily overloaded,
+    # and retry briefly before giving up.
+    models_to_try = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]
+    last_error = None
+
+    for model_name in models_to_try:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=build_system_prompt(student_name)
+                    ),
+                )
+                return response.text
+            except Exception as e:
+                last_error = e
+                time.sleep(2)
+
+    raise last_error
 
 
 # ---- STEP 1: ASK FOR NAME ----
