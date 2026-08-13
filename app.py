@@ -2,14 +2,8 @@
 UNIBUDDY AI — WEB VERSION (Streamlit)
 --------------------------------------------------
 A colorful, modern-looking version of the stats study assistant.
-
-BUGFIX NOTE: Earlier versions stored a "chat session" object in Streamlit's
-session_state and reused it across reruns. Streamlit reruns the whole script
-on every message, and the underlying network client inside that chat object
-would get closed between reruns, causing a crash ("Cannot send a request, as
-the client has been closed"). This version avoids that by rebuilding the
-conversation from plain message history every time, instead of reusing a
-long-lived chat object.
+RAG still runs behind the scenes (the bot still reads your notes to answer),
+but source file names are no longer shown to keep the chat clean.
 
 SETUP:
    pip install streamlit
@@ -54,16 +48,6 @@ st.markdown("""
         border-radius: 16px;
         padding: 0.5rem 0.25rem;
     }
-    .source-pill {
-        display: inline-block;
-        background: linear-gradient(135deg, #74B9FF, #A29BFE);
-        color: white;
-        padding: 4px 14px;
-        border-radius: 999px;
-        font-size: 0.8rem;
-        margin-top: 6px;
-        font-weight: 500;
-    }
     [data-testid="stChatInput"] {
         border-radius: 16px;
     }
@@ -107,18 +91,18 @@ Your style:
 - Keep responses focused, not too long.
 - Be encouraging.
 - Address {student_name} by name occasionally, naturally (not every message).
+- Never mention file names, slide numbers, or "your notes/slides" explicitly
+  in a way that sounds like a citation — just answer naturally as if you
+  simply know the material.
 """
 
 
 def search_notes(question, n_results=3):
     results = collection.query(query_texts=[question], n_results=n_results)
     if not results["documents"] or not results["documents"][0]:
-        return None, []
+        return None
     chunks = results["documents"][0]
-    sources = [meta["source"] for meta in results["metadatas"][0]]
-    combined_text = "\n\n---\n\n".join(chunks)
-    unique_sources = list(set(sources))
-    return combined_text, unique_sources
+    return "\n\n---\n\n".join(chunks)
 
 
 def get_ai_response(full_prompt, student_name):
@@ -130,14 +114,12 @@ def get_ai_response(full_prompt, student_name):
     """
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
-    # Rebuild conversation history as a list of Content objects
     contents = []
     for msg in st.session_state.messages:
         role = "user" if msg["role"] == "user" else "model"
         contents.append(
             types.Content(role=role, parts=[types.Part(text=msg["content"])])
         )
-    # Add the new message (with RAG context attached) as the latest turn
     contents.append(
         types.Content(role="user", parts=[types.Part(text=full_prompt)])
     )
@@ -175,11 +157,6 @@ for msg in st.session_state.messages:
     avatar = "🧑‍🎓" if msg["role"] == "user" else "🎓"
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
-        if msg.get("sources"):
-            pills = " ".join(
-                f'<span class="source-pill">📄 {s}</span>' for s in msg["sources"]
-            )
-            st.markdown(pills, unsafe_allow_html=True)
 
 # ---- CHAT INPUT ----
 user_input = st.chat_input("Ask about your stats coursework...")
@@ -188,7 +165,7 @@ if user_input:
     with st.chat_message("user", avatar="🧑‍🎓"):
         st.markdown(user_input)
 
-    context, sources = search_notes(user_input)
+    context = search_notes(user_input)
     if context:
         full_prompt = (
             f"Relevant excerpts from the Stats notes:\n\n{context}\n\n"
@@ -204,17 +181,6 @@ if user_input:
             except Exception as e:
                 reply_text = f"Sorry, something went wrong: {e}"
             st.markdown(reply_text)
-            if sources:
-                pills = " ".join(
-                    f'<span class="source-pill">📄 {s}</span>' for s in sources
-                )
-                st.markdown(pills, unsafe_allow_html=True)
 
-    # Save the ORIGINAL user question (not the RAG-augmented version) to
-    # history, so future turns don't re-send the notes excerpts redundantly.
     st.session_state.messages.append({"role": "user", "content": user_input})
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": reply_text,
-        "sources": sources,
-    })
+    st.session_state.messages.append({"role": "assistant", "content": reply_text})
