@@ -2,8 +2,14 @@
 UNIBUDDY AI — WEB VERSION (Streamlit)
 --------------------------------------------------
 A colorful, modern-looking version of the stats study assistant.
-Now asks for the student's name so it's not hardcoded to just Taseer —
-this makes it usable by any classmate.
+
+BUGFIX NOTE: Earlier versions stored a "chat session" object in Streamlit's
+session_state and reused it across reruns. Streamlit reruns the whole script
+on every message, and the underlying network client inside that chat object
+would get closed between reruns, causing a crash ("Cannot send a request, as
+the client has been closed"). This version avoids that by rebuilding the
+conversation from plain message history every time, instead of reusing a
+long-lived chat object.
 
 SETUP:
    pip install streamlit
@@ -79,15 +85,12 @@ if not GOOGLE_API_KEY:
     st.error("GOOGLE_API_KEY is not set. Add it in your app's Secrets settings.")
     st.stop()
 
-client = genai.Client(api_key=GOOGLE_API_KEY)
-
 DB_FOLDER = "knowledge_base"
 chroma_client = chromadb.PersistentClient(path=DB_FOLDER)
 collection = chroma_client.get_or_create_collection(name="stats_notes")
 
 
 def build_system_prompt(student_name):
-    """Builds the system prompt personalized with whoever is using the app."""
     return f"""You are UniBuddy, a patient, encouraging study assistant for
 {student_name}, a university student in Lahore studying Artificial Intelligence.
 
@@ -118,7 +121,38 @@ def search_notes(question, n_results=3):
     return combined_text, unique_sources
 
 
-# ---- STEP 1: ASK FOR NAME (before anything else) ----
+def get_ai_response(full_prompt, student_name):
+    """
+    Creates a FRESH client and rebuilds the full conversation history on
+    every call, instead of reusing a long-lived chat object. This avoids
+    the 'client has been closed' crash that happens when Streamlit reruns
+    the script between messages.
+    """
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+
+    # Rebuild conversation history as a list of Content objects
+    contents = []
+    for msg in st.session_state.messages:
+        role = "user" if msg["role"] == "user" else "model"
+        contents.append(
+            types.Content(role=role, parts=[types.Part(text=msg["content"])])
+        )
+    # Add the new message (with RAG context attached) as the latest turn
+    contents.append(
+        types.Content(role="user", parts=[types.Part(text=full_prompt)])
+    )
+
+    response = client.models.generate_content(
+        model="gemini-flash-latest",
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=build_system_prompt(student_name)
+        ),
+    )
+    return response.text
+
+
+# ---- STEP 1: ASK FOR NAME ----
 if "user_name" not in st.session_state:
     st.session_state.user_name = None
 
@@ -128,21 +162,12 @@ if st.session_state.user_name is None:
     if st.button("Start studying →") and name_input.strip():
         st.session_state.user_name = name_input.strip()
         st.rerun()
-    st.stop()  # Don't show the rest of the app until a name is given
+    st.stop()
 
-# ---- STEP 2: SET UP CHAT SESSION (once we have a name) ----
-if "chat" not in st.session_state:
-    st.session_state.chat = client.chats.create(
-        model="gemini-flash-latest",
-        config=types.GenerateContentConfig(
-            system_instruction=build_system_prompt(st.session_state.user_name)
-        ),
-    )
-
+# ---- STEP 2: MESSAGE HISTORY ----
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# ---- DISPLAY CHAT HISTORY ----
 if not st.session_state.messages:
     st.info(f"👋 Hey {st.session_state.user_name}! Try asking: *\"What is measures of dispersion?\"* or *\"Quiz me on skewness and kurtosis\"*")
 
@@ -160,7 +185,6 @@ for msg in st.session_state.messages:
 user_input = st.chat_input("Ask about your stats coursework...")
 
 if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user", avatar="🧑‍🎓"):
         st.markdown(user_input)
 
@@ -175,16 +199,22 @@ if user_input:
 
     with st.chat_message("assistant", avatar="🎓"):
         with st.spinner("Thinking..."):
-            response = st.session_state.chat.send_message(full_prompt)
-            st.markdown(response.text)
+            try:
+                reply_text = get_ai_response(full_prompt, st.session_state.user_name)
+            except Exception as e:
+                reply_text = f"Sorry, something went wrong: {e}"
+            st.markdown(reply_text)
             if sources:
                 pills = " ".join(
                     f'<span class="source-pill">📄 {s}</span>' for s in sources
                 )
                 st.markdown(pills, unsafe_allow_html=True)
 
+    # Save the ORIGINAL user question (not the RAG-augmented version) to
+    # history, so future turns don't re-send the notes excerpts redundantly.
+    st.session_state.messages.append({"role": "user", "content": user_input})
     st.session_state.messages.append({
         "role": "assistant",
-        "content": response.text,
+        "content": reply_text,
         "sources": sources,
     })
