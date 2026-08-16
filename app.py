@@ -127,11 +127,11 @@ def get_ai_response(full_prompt, student_name):
 
     # Try a couple of model names in case one is temporarily overloaded,
     # and retry briefly before giving up.
-    models_to_try = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"]
+    models_to_try = ["gemini-flash-latest", "gemini-2.5-flash"]
     last_error = None
 
     for model_name in models_to_try:
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 response = client.models.generate_content(
                     model=model_name,
@@ -143,7 +143,7 @@ def get_ai_response(full_prompt, student_name):
                 return response.text
             except Exception as e:
                 last_error = e
-                time.sleep(2)
+                time.sleep(4)
 
     raise last_error
 
